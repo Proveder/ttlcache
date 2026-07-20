@@ -733,11 +733,9 @@ func (c *Cache[K, V]) OnInsertion(fn func(context.Context, *Item[K, V])) func() 
 	c.events.insertion.mu.Lock()
 	id := c.events.insertion.nextID
 	c.events.insertion.fns[id] = func(item *Item[K, V]) {
-		wg.Add(1)
-		go func() {
+		wg.Go(func() {
 			fn(ctx, item)
-			wg.Done()
-		}()
+		})
 	}
 	c.events.insertion.nextID++
 	c.events.insertion.mu.Unlock()
@@ -771,11 +769,9 @@ func (c *Cache[K, V]) OnUpdate(fn func(context.Context, *Item[K, V])) func() {
 	c.events.update.mu.Lock()
 	id := c.events.update.nextID
 	c.events.update.fns[id] = func(item *Item[K, V]) {
-		wg.Add(1)
-		go func() {
+		wg.Go(func() {
 			fn(ctx, item)
-			wg.Done()
-		}()
+		})
 	}
 	c.events.update.nextID++
 	c.events.update.mu.Unlock()
@@ -809,11 +805,9 @@ func (c *Cache[K, V]) OnEviction(fn func(context.Context, EvictionReason, *Item[
 	c.events.eviction.mu.Lock()
 	id := c.events.eviction.nextID
 	c.events.eviction.fns[id] = func(r EvictionReason, item *Item[K, V]) {
-		wg.Add(1)
-		go func() {
+		wg.Go(func() {
 			fn(ctx, r, item)
-			wg.Done()
-		}()
+		})
 	}
 	c.events.eviction.nextID++
 	c.events.eviction.mu.Unlock()
@@ -886,7 +880,7 @@ func (l *SuppressedLoader[K, V]) Load(c *Cache[K, V], key K) *Item[K, V] {
 	// itself does not return any of its errors, it returns
 	// the error that we return ourselves in the func below, which
 	// is also nil
-	res, _, _ := l.group.Do(strKey, func() (interface{}, error) {
+	res, _, _ := l.group.Do(strKey, func() (any, error) {
 		item := l.loader.Load(c, key)
 		if item == nil {
 			return nil, nil

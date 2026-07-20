@@ -110,6 +110,14 @@ type ItemOption[K comparable, V any] interface {
 type itemOptionFunc[K comparable, V any] func(*Item[K, V])
 
 // apply calls the wrapped function.
+//
+// staticcheck's U1000 pass reports this method as unused. It is not: it is the
+// only implementation of the ItemOption interface, reached via applyItemOptions
+// -> opts[i].apply(item) from the exported NewItemWithOpts. The report is a
+// known blind spot around methods on generic types, so it is silenced here
+// rather than "fixed" — deleting the method would not compile.
+//
+//lint:ignore U1000 false positive on generic method, see comment above
 func (fn itemOptionFunc[K, V]) apply(item *Item[K, V]) {
 	fn(item)
 }

@@ -19,7 +19,7 @@ func TestMain(m *testing.M) {
 }
 
 func Test_New(t *testing.T) {
-	c := New[string, string](
+	c := New(
 		WithTTL[string, string](time.Hour),
 		WithCapacity[string, string](1),
 	)
@@ -118,8 +118,6 @@ func Test_Cache_updateExpirations(t *testing.T) {
 	}
 
 	for cn, c := range cc {
-		c := c
-
 		t.Run(cn, func(t *testing.T) {
 			t.Parallel()
 
@@ -297,8 +295,6 @@ func Test_Cache_set(t *testing.T) {
 	}
 
 	for cn, c := range cc {
-		c := c
-
 		t.Run(cn, func(t *testing.T) {
 			t.Parallel()
 
@@ -390,7 +386,7 @@ func Test_Cache_set(t *testing.T) {
 	// finally, test proper expiration queue handling on expired item update.
 	// recreate situation when expired item gets updated
 	// and not auto-cleaned up yet.
-	c := New[string, struct{}](
+	c := New(
 		WithDisableTouchOnHit[string, struct{}](),
 	)
 
@@ -447,8 +443,6 @@ func Test_Cache_get(t *testing.T) {
 	}
 
 	for cn, c := range cc {
-		c := c
-
 		t.Run(cn, func(t *testing.T) {
 			t.Parallel()
 
@@ -606,7 +600,7 @@ func Test_Cache_Get(t *testing.T) {
 				}),
 			},
 			CallOptions: []Option[string, string]{
-				WithLoader[string, string](LoaderFunc[string, string](func(_ *Cache[string, string], _ string) *Item[string, string] {
+				WithLoader(LoaderFunc[string, string](func(_ *Cache[string, string], _ string) *Item[string, string] {
 					return &Item[string, string]{key: "hello"}
 				})),
 			},
@@ -624,7 +618,7 @@ func Test_Cache_Get(t *testing.T) {
 				}),
 			},
 			CallOptions: []Option[string, string]{
-				WithLoader[string, string](LoaderFunc[string, string](func(_ *Cache[string, string], _ string) *Item[string, string] {
+				WithLoader(LoaderFunc[string, string](func(_ *Cache[string, string], _ string) *Item[string, string] {
 					return nil
 				})),
 			},
@@ -659,8 +653,6 @@ func Test_Cache_Get(t *testing.T) {
 	}
 
 	for cn, c := range cc {
-		c := c
-
 		t.Run(cn, func(t *testing.T) {
 			t.Parallel()
 
@@ -803,7 +795,7 @@ func Test_Cache_GetAndDelete(t *testing.T) {
 	loadedItem := &Item[string, string]{key: "test"}
 	item, present = cache.GetAndDelete(
 		"test3",
-		WithLoader[string, string](
+		WithLoader(
 			LoaderFunc[string, string](func(_ *Cache[string, string], _ string) *Item[string, string] { return loadedItem }),
 		),
 	)
@@ -1371,7 +1363,7 @@ func Test_NewSuppressedLoader(t *testing.T) {
 	// uses the provided loader and group parameters
 	group := &singleflight.Group{}
 
-	sl := NewSuppressedLoader[string, string](loader, group)
+	sl := NewSuppressedLoader(loader, group)
 	require.NotNil(t, sl)
 	require.NotNil(t, sl.loader)
 
@@ -1384,7 +1376,7 @@ func Test_NewSuppressedLoader(t *testing.T) {
 	// of *singleflight.Group as nil parameter is passed
 	called = false
 
-	sl = NewSuppressedLoader[string, string](loader, nil)
+	sl = NewSuppressedLoader(loader, nil)
 	require.NotNil(t, sl)
 	require.NotNil(t, sl.loader)
 
@@ -1414,9 +1406,12 @@ func Test_SuppressedLoader_Load(t *testing.T) {
 				return nil
 			}
 
-			res1 := *res
-
-			return &res1
+			// Hand back a distinct *Item per load call so the assertion
+			// below (require.Same) really proves singleflight deduplicated
+			// the calls rather than trivially comparing one shared pointer.
+			// Built field-by-field instead of `*res` because Item embeds a
+			// sync.RWMutex and copying the struct copies the lock (go vet).
+			return &Item[string, string]{key: res.key}
 		}),
 		group: &singleflight.Group{},
 	}
