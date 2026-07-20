@@ -1,10 +1,10 @@
 module github.com/proveder/ttlcache/v3
 
-go 1.25.0
+go 1.26.5
 
 require (
 	github.com/jellydator/ttlcache/v3 v3.4.0
-	github.com/proveder/envconfig v0.0.1
+	github.com/proveder/envconfig v0.0.2
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/goleak v1.3.0
 	golang.org/x/sync v0.20.0

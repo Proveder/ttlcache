@@ -654,7 +654,9 @@ func Test_Cache_Get(t *testing.T) {
 
 	for cn, c := range cc {
 		t.Run(cn, func(t *testing.T) {
-			t.Parallel()
+			// No t.Parallel(): AllocsPerRun panics in parallel tests, and the
+			// allocation counts asserted below are only stable when nothing
+			// else allocates concurrently.
 
 			cache := prepCache(0, time.Minute, foundKey, "test2", "test3")
 			oldExpiresAt := cache.items.values[foundKey].Value.(*Item[string, string]).expiresAt

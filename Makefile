@@ -4,14 +4,16 @@ test:
 	go test -cover -race ./...
 
 # Go files tracked by git, expanded lazily by the shell (gopls check needs explicit
-# paths — it does not accept ./...). Falls back to find outside a git checkout.
+# paths — it does not accept ./...). The xargs filter drops tracked-but-deleted
+# files, which git ls-files still reports and gopls errors on. Falls back to
+# find outside a git checkout.
 #
 # examples/ is excluded on purpose: examples/httpcache and examples/dbcache are
 # each their own Go module (pinned to the upstream jellydator/ttlcache), so
 # `go vet ./...` and `staticcheck ./...` already skip them. Feeding them to gopls
 # would make the three stages disagree about what "the code" is, and would need
 # a per-module dependency download in CI.
-GO_FILES = $$( { git ls-files '*.go' 2>/dev/null || find . -name '*.go' -not -path './vendor/*'; } | sed 's|^\./||' | grep -v '^examples/' )
+GO_FILES = $$( { git ls-files '*.go' 2>/dev/null | xargs -I{} sh -c '[ -f "{}" ] && echo "{}"' || find . -name '*.go' -not -path './vendor/*'; } | sed 's|^\./||' | grep -v '^examples/' )
 
 # gopls' new(expr) modernizer (Go 1.26) fires on every single-arg helper that
 # returns &param. Nothing in this module matches today, and this module stays on
@@ -24,6 +26,16 @@ GOPLS_EXCLUDE = 'can be simplified to new\(x\)|inlinable wrapper around new\(exp
 lint: ## Static analysis: correctness (vet), simplifications (staticcheck), modernizations (gopls)
 	@# Every stage runs even if an earlier one reports, so a single invocation shows
 	@# the full picture; rc accumulates and the target fails at the end.
+	@# Preflight: gopls pins GOTOOLCHAIN=local, so the *installed* go must satisfy
+	@# go.work/go.mod on its own — GOTOOLCHAIN=auto silently rescues vet/staticcheck
+	@# by downloading a newer toolchain, but gopls then fails with a buried version
+	@# error. Surface it up front, with the remedy.
+	@if ! chk="$$(GOTOOLCHAIN=local go list -m 2>&1 >/dev/null)"; then \
+		echo "==> toolchain preflight failed:"; \
+		printf '%s\n' "$$chk" | sed 's/^/  /'; \
+		echo "  fix: update the installed Go (macOS: brew upgrade go), then re-run"; \
+		exit 1; \
+	fi
 	@rc=0; \
 	echo "==> go vet (correctness)"; \
 	go vet ./... || rc=1; \
