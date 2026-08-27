@@ -1065,13 +1065,20 @@ func Test_Cache_Start(t *testing.T) {
 	cache.stopped = true
 
 	go cache.Start()
-	go cache.Start() // should be no-op
 
 	assert.Eventually(t, func() bool {
 		cache.stopMu.Lock()
 		defer cache.stopMu.Unlock()
 		return !cache.stopped
 	}, time.Second, time.Millisecond*100)
+
+	/* The second Start is exercised SYNCHRONOUSLY, after the first has
+	 * provably claimed ownership: it must return immediately as a no-op.
+	 * It used to be a second `go cache.Start()`, which raced Stop below —
+	 * on a slow runner that goroutine could run its ownership check only
+	 * AFTER Stop set stopped=true again, claim the loop for itself and run
+	 * forever, failing the suite's goleak check. */
+	assert.NotPanics(t, cache.Start)
 
 	assert.NotPanics(t, cache.Stop)
 
