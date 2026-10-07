@@ -456,7 +456,7 @@ func Test_Cache_GetOrFetchMany_HitsTouchUnlessDisabled(t *testing.T) {
 
 func Test_Cache_GetOrFetchMany_TheLoaderIsNotConsulted(t *testing.T) {
 	var loads atomic.Int32
-	c := New(WithLoader[int, string](LoaderFunc[int, string](func(*Cache[int, string], int) *Item[int, string] {
+	c := New(WithLoader(LoaderFunc[int, string](func(*Cache[int, string], int) *Item[int, string] {
 		loads.Add(1)
 		return nil
 	})))

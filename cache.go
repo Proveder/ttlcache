@@ -90,17 +90,25 @@ func New[K comparable, V any](opts ...Option[K, V]) *Cache[K, V] {
 	return c
 }
 
-// updateExpirations updates the expiration queue and notifies
-// the cache auto cleaner if needed.
+// nextExpiry returns when the front of the expiration queue expires (zero
+// when the queue is empty). Read it BEFORE mutating an item: it is the
+// oldExpiresAt that updateExpirations compares against.
 // Not safe for concurrent use by multiple goroutines without additional
 // locking.
-func (c *Cache[K, V]) updateExpirations(fresh bool, elem *list.Element) {
-	var oldExpiresAt time.Time
-
-	if !c.items.expQueue.isEmpty() {
-		oldExpiresAt = c.items.expQueue[0].Value.(*Item[K, V]).expiresAt
+func (c *Cache[K, V]) nextExpiry() time.Time {
+	if c.items.expQueue.isEmpty() {
+		return time.Time{}
 	}
+	return c.items.expQueue[0].Value.(*Item[K, V]).expiresAt
+}
 
+// updateExpirations updates the expiration queue and notifies
+// the cache auto cleaner if needed.
+// 'oldExpiresAt' should reflect the front of the expiration queue
+// before any item mutations.
+// Not safe for concurrent use by multiple goroutines without additional
+// locking.
+func (c *Cache[K, V]) updateExpirations(fresh bool, elem *list.Element, oldExpiresAt time.Time) {
 	if fresh {
 		c.items.expQueue.push(elem)
 	} else {
@@ -155,9 +163,11 @@ func (c *Cache[K, V]) set(key K, value V, ttl time.Duration) *Item[K, V] {
 		item := elem.Value.(*Item[K, V])
 		oldItemCost := item.cost
 
+		oldExpiresAt := c.nextExpiry()
+
 		item.update(value, ttl)
 
-		c.updateExpirations(false, elem)
+		c.updateExpirations(false, elem, oldExpiresAt)
 
 		if c.options.maxCost != 0 {
 			c.cost = c.cost - oldItemCost + item.cost
@@ -189,11 +199,13 @@ func (c *Cache[K, V]) set(key K, value V, ttl time.Duration) *Item[K, V] {
 		ttl = c.options.ttl
 	}
 
+	oldExpiresAt := c.nextExpiry()
+
 	// create a new item
 	item := NewItemWithOpts(key, value, ttl, c.options.itemOpts...)
 	elem = c.items.lru.PushFront(item)
 	c.items.values[key] = elem
-	c.updateExpirations(true, elem)
+	c.updateExpirations(true, elem, oldExpiresAt)
 
 	if c.options.maxCost != 0 {
 		c.cost += item.cost
@@ -235,8 +247,10 @@ func (c *Cache[K, V]) get(key K, touch bool, includeExpired bool) *list.Element 
 	c.items.lru.MoveToFront(elem)
 
 	if touch && item.ttl > 0 {
+		oldExpiresAt := c.nextExpiry()
+
 		item.touch()
-		c.updateExpirations(false, elem)
+		c.updateExpirations(false, elem, oldExpiresAt)
 	}
 
 	return elem
@@ -337,6 +351,10 @@ func (c *Cache[K, V]) evict(reason EvictionReason, elems ...*list.Element) {
 	c.items.values = make(map[K]*list.Element)
 	c.items.lru.Init()
 	c.items.expQueue = newExpirationQueue[K, V]()
+
+	if c.options.maxCost != 0 {
+		c.cost = 0
+	}
 }
 
 // delete deletes an item by the provided key.
@@ -644,6 +662,27 @@ func (c *Cache[K, V]) Metrics() Metrics {
 	defer c.metricsMu.RUnlock()
 
 	return c.metrics
+}
+
+// Cost returns the total cost of all items currently stored in the cache.
+// Note: Cost tracking is only active when a maximum cost limit is configured.
+// If no maximum cost is set, this method will always return 0.
+func (c *Cache[K, V]) Cost() uint64 {
+	c.items.mu.RLock()
+	defer c.items.mu.RUnlock()
+
+	return c.cost
+}
+
+// IsStarted returns true if the Start method has started and Stop has not called.
+// This is useful so that a caller doing `go c.Start` can ensure that the new
+// goroutine has actually started running.  Unless the caller waits to see that the
+// goroutine is running, a subsequent call to `Stop` might occur before
+// the goroutine gets scheduled, preventing proper shutdown of the goroutine.
+func (c *Cache[K, V]) IsStarted() bool {
+	c.stopMu.Lock()
+	defer c.stopMu.Unlock()
+	return !c.stopped
 }
 
 // Start starts an automatic cleanup process that periodically deletes
