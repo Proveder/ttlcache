@@ -1178,13 +1178,17 @@ func Test_Cache_Start(t *testing.T) {
 	cache.stopped = true
 
 	go cache.Start()
-	go cache.Start() // should be no-op
 
 	assert.Eventually(t, func() bool {
 		cache.stopMu.Lock()
 		defer cache.stopMu.Unlock()
 		return !cache.stopped
 	}, time.Second, time.Millisecond*100)
+
+	// The second Start runs synchronously, once the first is known to be
+	// running, and must return at once as a no-op. As a second goroutine it
+	// could run only after Stop below, start the loop again and leak it.
+	assert.NotPanics(t, cache.Start)
 
 	assert.NotPanics(t, cache.Stop)
 
