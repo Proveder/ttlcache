@@ -76,8 +76,6 @@ func Test_newItemWithOpts(t *testing.T) {
 	}
 
 	for cn, c := range cc {
-		c := c
-
 		t.Run(cn, func(t *testing.T) {
 			item := NewItemWithOpts("key", 123, time.Hour, c.opts...)
 			require.NotNil(t, item)
@@ -169,8 +167,6 @@ func Test_Item_update(t *testing.T) {
 	}
 
 	for cn, c := range cc {
-		c := c
-
 		t.Run(cn, func(t *testing.T) {
 			item := NewItemWithOpts("test", "hello", initialTTL, c.opts...)
 

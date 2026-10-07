@@ -36,6 +36,9 @@ type Cache[K comparable, V any] struct {
 		expQueue expirationQueue[K, V]
 
 		timerCh chan time.Duration
+
+		// in-flight GetOrFetch calls by key (see fetch.go)
+		fetches map[K]*fetchCall[V]
 	}
 	cost uint64
 
@@ -77,6 +80,7 @@ func New[K comparable, V any](opts ...Option[K, V]) *Cache[K, V] {
 	c.items.lru = list.New()
 	c.items.expQueue = newExpirationQueue[K, V]()
 	c.items.timerCh = make(chan time.Duration, 1) // buffer is important
+	c.items.fetches = make(map[K]*fetchCall[V])
 	c.events.insertion.fns = make(map[uint64]func(*Item[K, V]))
 	c.events.update.fns = make(map[uint64]func(*Item[K, V]))
 	c.events.eviction.fns = make(map[uint64]func(EvictionReason, *Item[K, V]))
@@ -86,6 +90,18 @@ func New[K comparable, V any](opts ...Option[K, V]) *Cache[K, V] {
 	return c
 }
 
+// nextExpiry returns when the front of the expiration queue expires (zero
+// when the queue is empty). Read it BEFORE mutating an item: it is the
+// oldExpiresAt that updateExpirations compares against.
+// Not safe for concurrent use by multiple goroutines without additional
+// locking.
+func (c *Cache[K, V]) nextExpiry() time.Time {
+	if c.items.expQueue.isEmpty() {
+		return time.Time{}
+	}
+	return c.items.expQueue[0].Value.(*Item[K, V]).expiresAt
+}
+
 // updateExpirations updates the expiration queue and notifies
 // the cache auto cleaner if needed.
 // 'oldExpiresAt' should reflect the front of the expiration queue
@@ -93,7 +109,6 @@ func New[K comparable, V any](opts ...Option[K, V]) *Cache[K, V] {
 // Not safe for concurrent use by multiple goroutines without additional
 // locking.
 func (c *Cache[K, V]) updateExpirations(fresh bool, elem *list.Element, oldExpiresAt time.Time) {
-
 	if fresh {
 		c.items.expQueue.push(elem)
 	} else {
@@ -148,10 +163,7 @@ func (c *Cache[K, V]) set(key K, value V, ttl time.Duration) *Item[K, V] {
 		item := elem.Value.(*Item[K, V])
 		oldItemCost := item.cost
 
-		var oldExpiresAt time.Time
-		if !c.items.expQueue.isEmpty() {
-			oldExpiresAt = c.items.expQueue[0].Value.(*Item[K, V]).expiresAt
-		}
+		oldExpiresAt := c.nextExpiry()
 
 		item.update(value, ttl)
 
@@ -187,10 +199,7 @@ func (c *Cache[K, V]) set(key K, value V, ttl time.Duration) *Item[K, V] {
 		ttl = c.options.ttl
 	}
 
-	var oldExpiresAt time.Time
-	if !c.items.expQueue.isEmpty() {
-		oldExpiresAt = c.items.expQueue[0].Value.(*Item[K, V]).expiresAt
-	}
+	oldExpiresAt := c.nextExpiry()
 
 	// create a new item
 	item := NewItemWithOpts(key, value, ttl, c.options.itemOpts...)
@@ -238,10 +247,7 @@ func (c *Cache[K, V]) get(key K, touch bool, includeExpired bool) *list.Element 
 	c.items.lru.MoveToFront(elem)
 
 	if touch && item.ttl > 0 {
-		var oldExpiresAt time.Time
-		if !c.items.expQueue.isEmpty() {
-			oldExpiresAt = c.items.expQueue[0].Value.(*Item[K, V]).expiresAt
-		}
+		oldExpiresAt := c.nextExpiry()
 
 		item.touch()
 		c.updateExpirations(false, elem, oldExpiresAt)
@@ -376,6 +382,7 @@ func (c *Cache[K, V]) Set(key K, value V, ttl time.Duration) *Item[K, V] {
 	c.items.mu.Lock()
 	defer c.items.mu.Unlock()
 
+	c.fenceFetch(key)
 	return c.set(key, value, ttl)
 }
 
@@ -393,6 +400,7 @@ func (c *Cache[K, V]) Delete(key K) {
 	c.items.mu.Lock()
 	defer c.items.mu.Unlock()
 
+	c.fenceFetch(key)
 	c.delete(key)
 }
 
@@ -443,6 +451,7 @@ func (c *Cache[K, V]) GetOrSetFunc(key K, fn func() V, opts ...Option[K, V]) (*I
 	}
 	setOpts = applyOptions(setOpts, opts...) // used only to update the TTL
 
+	c.fenceFetch(key)
 	item := c.set(key, fn(), setOpts.ttl)
 
 	return item, false
@@ -457,6 +466,7 @@ func (c *Cache[K, V]) GetOrSetFunc(key K, fn func() V, opts ...Option[K, V]) (*I
 // the item is not found.
 func (c *Cache[K, V]) GetAndDelete(key K, opts ...Option[K, V]) (*Item[K, V], bool) {
 	c.items.mu.Lock()
+	c.fenceFetch(key) // deleted whether found or not, like Delete
 
 	elem := c.getWithOpts(key, false, opts...)
 	if elem == nil {
@@ -484,6 +494,7 @@ func (c *Cache[K, V]) GetAndDelete(key K, opts ...Option[K, V]) (*Item[K, V], bo
 // DeleteAll deletes all items from the cache.
 func (c *Cache[K, V]) DeleteAll() {
 	c.items.mu.Lock()
+	c.fenceAllFetches()
 	c.evict(EvictionReasonDeleted)
 	c.items.mu.Unlock()
 }
@@ -770,11 +781,9 @@ func (c *Cache[K, V]) OnInsertion(fn func(context.Context, *Item[K, V])) func() 
 	c.events.insertion.mu.Lock()
 	id := c.events.insertion.nextID
 	c.events.insertion.fns[id] = func(item *Item[K, V]) {
-		wg.Add(1)
-		go func() {
+		wg.Go(func() {
 			fn(ctx, item)
-			wg.Done()
-		}()
+		})
 	}
 	c.events.insertion.nextID++
 	c.events.insertion.mu.Unlock()
@@ -808,11 +817,9 @@ func (c *Cache[K, V]) OnUpdate(fn func(context.Context, *Item[K, V])) func() {
 	c.events.update.mu.Lock()
 	id := c.events.update.nextID
 	c.events.update.fns[id] = func(item *Item[K, V]) {
-		wg.Add(1)
-		go func() {
+		wg.Go(func() {
 			fn(ctx, item)
-			wg.Done()
-		}()
+		})
 	}
 	c.events.update.nextID++
 	c.events.update.mu.Unlock()
@@ -846,11 +853,9 @@ func (c *Cache[K, V]) OnEviction(fn func(context.Context, EvictionReason, *Item[
 	c.events.eviction.mu.Lock()
 	id := c.events.eviction.nextID
 	c.events.eviction.fns[id] = func(r EvictionReason, item *Item[K, V]) {
-		wg.Add(1)
-		go func() {
+		wg.Go(func() {
 			fn(ctx, r, item)
-			wg.Done()
-		}()
+		})
 	}
 	c.events.eviction.nextID++
 	c.events.eviction.mu.Unlock()
@@ -923,7 +928,7 @@ func (l *SuppressedLoader[K, V]) Load(c *Cache[K, V], key K) *Item[K, V] {
 	// itself does not return any of its errors, it returns
 	// the error that we return ourselves in the func below, which
 	// is also nil
-	res, _, _ := l.group.Do(strKey, func() (interface{}, error) {
+	res, _, _ := l.group.Do(strKey, func() (any, error) {
 		item := l.loader.Load(c, key)
 		if item == nil {
 			return nil, nil

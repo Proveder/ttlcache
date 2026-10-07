@@ -66,14 +66,14 @@ func (q expirationQueue[K, V]) Swap(i, j int) {
 }
 
 // Push appends a new item to the item slice.
-func (q *expirationQueue[K, V]) Push(x interface{}) {
+func (q *expirationQueue[K, V]) Push(x any) {
 	elem := x.(*list.Element)
 	elem.Value.(*Item[K, V]).queueIndex = len(*q)
 	*q = append(*q, elem)
 }
 
 // Pop removes and returns the last item.
-func (q *expirationQueue[K, V]) Pop() interface{} {
+func (q *expirationQueue[K, V]) Pop() any {
 	old := *q
 	i := len(old) - 1
 	elem := old[i]

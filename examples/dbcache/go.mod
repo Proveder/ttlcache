@@ -1,6 +1,6 @@
 module dbcache
 
-go 1.24.2
+go 1.26.5
 
 require github.com/jellydator/ttlcache/v3 v3.3.0
 
