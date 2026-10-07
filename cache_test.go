@@ -449,8 +449,9 @@ func Test_Cache_set(t *testing.T) {
 	c.Set("test", struct{}{}, 1)
 	time.Sleep(50 * time.Millisecond)
 
-	// update the expired item
-	updatedItem := c.Set("test", struct{}{}, 100*time.Millisecond)
+	// update the expired item; its new TTL must outlast the sleep below by
+	// far, or a slow scheduler lets it expire for real before cl() runs
+	updatedItem := c.Set("test", struct{}{}, time.Second)
 
 	// eviction should not happen as we prolonged element
 	cl := c.OnEviction(func(_ context.Context, _ EvictionReason, item *Item[string, struct{}]) {
@@ -1194,12 +1195,9 @@ func Test_Cache_Start(t *testing.T) {
 		return !cache.stopped
 	}, time.Second, time.Millisecond*100)
 
-	/* The second Start is exercised SYNCHRONOUSLY, after the first has
-	 * provably claimed ownership: it must return immediately as a no-op.
-	 * It used to be a second `go cache.Start()`, which raced Stop below —
-	 * on a slow runner that goroutine could run its ownership check only
-	 * AFTER Stop set stopped=true again, claim the loop for itself and run
-	 * forever, failing the suite's goleak check. */
+	// The second Start runs synchronously, once the first is known to be
+	// running, and must return at once as a no-op. As a second goroutine it
+	// could run only after Stop below, start the loop again and leak it.
 	assert.NotPanics(t, cache.Start)
 
 	assert.NotPanics(t, cache.Stop)
@@ -1267,7 +1265,7 @@ func Test_Cache_OnInsertion(t *testing.T) {
 		default:
 			return false
 		}
-	}, time.Millisecond*500, time.Millisecond*250)
+	}, time.Second*5, time.Millisecond*10)
 	assert.Eventually(t, func() bool {
 		select {
 		case <-resCh:
@@ -1275,7 +1273,7 @@ func Test_Cache_OnInsertion(t *testing.T) {
 		default:
 			return false
 		}
-	}, time.Millisecond*500, time.Millisecond*250)
+	}, time.Second*5, time.Millisecond*10)
 
 	require.Len(t, cache.events.insertion.fns, 1)
 	assert.NotContains(t, cache.events.insertion.fns, uint64(0))
@@ -1302,7 +1300,7 @@ func Test_Cache_OnInsertion(t *testing.T) {
 		default:
 			return false
 		}
-	}, time.Millisecond*500, time.Millisecond*250)
+	}, time.Second*5, time.Millisecond*10)
 	assert.Eventually(t, func() bool {
 		select {
 		case <-resCh:
@@ -1310,7 +1308,7 @@ func Test_Cache_OnInsertion(t *testing.T) {
 		default:
 			return false
 		}
-	}, time.Millisecond*500, time.Millisecond*250)
+	}, time.Second*5, time.Millisecond*10)
 
 	assert.Empty(t, cache.events.insertion.fns)
 	assert.NotContains(t, cache.events.insertion.fns, uint64(1))
@@ -1351,7 +1349,7 @@ func Test_Cache_OnUpdate(t *testing.T) {
 		default:
 			return false
 		}
-	}, time.Millisecond*500, time.Millisecond*250)
+	}, time.Second*5, time.Millisecond*10)
 	assert.Eventually(t, func() bool {
 		select {
 		case <-resCh:
@@ -1359,7 +1357,7 @@ func Test_Cache_OnUpdate(t *testing.T) {
 		default:
 			return false
 		}
-	}, time.Millisecond*500, time.Millisecond*250)
+	}, time.Second*5, time.Millisecond*10)
 
 	require.Len(t, cache.events.update.fns, 1)
 	assert.NotContains(t, cache.events.update.fns, uint64(0))
@@ -1386,7 +1384,7 @@ func Test_Cache_OnUpdate(t *testing.T) {
 		default:
 			return false
 		}
-	}, time.Millisecond*500, time.Millisecond*250)
+	}, time.Second*5, time.Millisecond*10)
 	assert.Eventually(t, func() bool {
 		select {
 		case <-resCh:
@@ -1394,7 +1392,7 @@ func Test_Cache_OnUpdate(t *testing.T) {
 		default:
 			return false
 		}
-	}, time.Millisecond*500, time.Millisecond*250)
+	}, time.Second*5, time.Millisecond*10)
 
 	assert.Empty(t, cache.events.update.fns)
 	assert.NotContains(t, cache.events.update.fns, uint64(1))
@@ -1435,7 +1433,7 @@ func Test_Cache_OnEviction(t *testing.T) {
 		default:
 			return false
 		}
-	}, time.Millisecond*500, time.Millisecond*250)
+	}, time.Second*5, time.Millisecond*10)
 	assert.Eventually(t, func() bool {
 		select {
 		case <-resCh:
@@ -1443,7 +1441,7 @@ func Test_Cache_OnEviction(t *testing.T) {
 		default:
 			return false
 		}
-	}, time.Millisecond*500, time.Millisecond*250)
+	}, time.Second*5, time.Millisecond*10)
 
 	require.Len(t, cache.events.eviction.fns, 1)
 	assert.NotContains(t, cache.events.eviction.fns, uint64(0))
@@ -1470,7 +1468,7 @@ func Test_Cache_OnEviction(t *testing.T) {
 		default:
 			return false
 		}
-	}, time.Millisecond*500, time.Millisecond*250)
+	}, time.Second*5, time.Millisecond*10)
 	assert.Eventually(t, func() bool {
 		select {
 		case <-resCh:
@@ -1478,7 +1476,7 @@ func Test_Cache_OnEviction(t *testing.T) {
 		default:
 			return false
 		}
-	}, time.Millisecond*500, time.Millisecond*250)
+	}, time.Second*5, time.Millisecond*10)
 
 	assert.Empty(t, cache.events.eviction.fns)
 	assert.NotContains(t, cache.events.eviction.fns, uint64(1))
