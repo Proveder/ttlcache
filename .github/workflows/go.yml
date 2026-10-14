@@ -1,6 +1,10 @@
 name: Go
 run-name: ${{ github.actor }} is building 🔧
-on: [push, pull_request]
+# Never runs on push or pull request: the Release workflow calls it on the
+# commit it is about to tag, and it can be run by hand from the Actions tab.
+on:
+  workflow_dispatch:
+  workflow_call:
 jobs:
   test:
     runs-on: ubuntu-latest
