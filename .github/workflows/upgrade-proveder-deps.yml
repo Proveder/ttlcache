@@ -1,0 +1,126 @@
+name: Upgrade proveder deps
+run-name: ${{ github.actor }} is upgrading the Proveder dependencies of ${{ github.ref_name }}
+# By hand: Actions -> Upgrade proveder deps -> Run workflow. For every github.com/proveder/* module
+# go.mod requires (direct or indirect), it looks for a newer release tag (the module's @latest), and
+# if any has one it upgrades them all (go get <module>@latest), runs go mod tidy, and opens or updates
+# one pull request against the branch it ran on. All current: nothing happens.
+#
+# The pull request is the proveder-release-bot app's, so the repository's checks run on it (a pull
+# request opened with the workflow's own GITHUB_TOKEN starts no workflow). Secrets: GH_PRIVATE_TOKEN
+# (read access to the org's repositories, as the other workflows use it) and RELEASE_BOT_APP_ID /
+# RELEASE_BOT_PRIVATE_KEY (the app needs contents and pull requests write on this repository).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upgrade-proveder-deps-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the secrets
+        env:
+          GH_PRIVATE_TOKEN: ${{ secrets.GH_PRIVATE_TOKEN }}
+          RELEASE_BOT_APP_ID: ${{ secrets.RELEASE_BOT_APP_ID }}
+          RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+        run: |
+          missing=""
+          for name in GH_PRIVATE_TOKEN RELEASE_BOT_APP_ID RELEASE_BOT_PRIVATE_KEY; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing secrets:$missing (the workflow's header says what each is)."
+            exit 1
+          fi
+
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Reach the private modules
+        env:
+          GH_TOKEN: ${{ secrets.GH_PRIVATE_TOKEN }}
+        run: |
+          git config --global url."https://${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          go env -w GOPRIVATE='github.com/proveder/*'
+
+      - name: Upgrade what has a newer tag
+        id: upgrade
+        run: |
+          own=$(go list -m)
+          table=""
+          upgraded=""
+          for mod in $(go mod edit -json | jq -r '.Require[]?.Path' | grep -i '^github.com/proveder/' | grep -vxF "$own"); do
+            current=$(go list -m -f '{{.Version}}' "$mod")
+            latest=$(go list -m -f '{{.Version}}' "$mod@latest")
+            if [ "$current" != "$latest" ] && [ "$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -n 1)" = "$latest" ]; then
+              echo "$mod: $current -> $latest"
+              go get "$mod@$latest"
+              table="$table| \`$mod\` | $current | $latest |"$'\n'
+              upgraded="$upgraded ${mod#github.com/proveder/}"
+            else
+              echo "$mod: $current (current)"
+            fi
+          done
+          if [ -z "$upgraded" ]; then
+            echo "Every Proveder dependency is on its latest tag." >> "$GITHUB_STEP_SUMMARY"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          go mod tidy
+          if go build ./... > build.log 2>&1; then
+            build="\`go build ./...\` passes."
+          else
+            build="**\`go build ./...\` fails** after the upgrade: the code needs changes before this can merge."
+            cat build.log
+          fi
+          rm -f build.log
+          {
+            echo "body<<UPGRADE_EOF"
+            echo "Upgrades every \`github.com/proveder/*\` module with a newer release tag, then \`go mod tidy\`."
+            echo
+            echo "| Module | From | To |"
+            echo "| --- | --- | --- |"
+            printf '%s' "$table"
+            echo
+            echo "$build"
+            echo
+            echo "Opened by the Upgrade proveder deps workflow (run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+            echo "UPGRADE_EOF"
+            echo "title=chore: upgrade proveder deps (${upgraded# })"
+            echo "changed=true"
+          } >> "$GITHUB_OUTPUT"
+          echo "Upgraded:$upgraded" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: The release bot's token
+        if: steps.upgrade.outputs.changed == 'true'
+        id: bot
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+
+      - name: Open or update the pull request
+        if: steps.upgrade.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ steps.bot.outputs.token }}
+          branch: chore/upgrade-proveder-deps
+          base: ${{ github.ref_name }}
+          add-paths: |
+            go.mod
+            go.sum
+          commit-message: ${{ steps.upgrade.outputs.title }}
+          title: ${{ steps.upgrade.outputs.title }}
+          body: ${{ steps.upgrade.outputs.body }}
+          sign-commits: true
+          delete-branch: true
